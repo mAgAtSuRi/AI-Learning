@@ -1,0 +1,1 @@
+building micrograd with karpathy's video
