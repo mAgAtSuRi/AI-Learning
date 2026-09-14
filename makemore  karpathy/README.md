@@ -1,0 +1,1 @@
+Series of videos to learn how to build a name generator
