@@ -1,3 +1,4 @@
+from asyncio.proactor_events import _ProactorBasePipeTransport
 import torch
 import matplotlib.pyplot as plt
 import torch.nn.functional as F
@@ -51,6 +52,8 @@ itos = {i: s for s, i in stoi.items()}
 # 	print(''.join(out))
 
 # NEURAL NETWORK
+
+# Create dataset
 xs, ys = [], []
 for w in words:
 	chs = ['.'] + list(w) + ['.']
@@ -59,11 +62,50 @@ for w in words:
 		ix2 = stoi[ch2]
 		xs.append(ix1)
 		ys.append(ix2)
-
 xs = torch.tensor(xs)
 ys = torch.tensor(ys)
+num = xs.nelement()
+print('number of examples: ', num)
 
-xenc = F.one_hot(xs, num_classes=27).float()
-W = torch.randn((27, 1))
-print(xenc @ W)
-yenc = F.one_hot(ys, num_classes=27).float()
+# initialize the network
+g = torch.Generator().manual_seed(2147483647)
+W = torch.randn((27, 27), generator=g, requires_grad=True)
+
+# gradient descent
+for k in range(200):
+
+	# Forward pass
+	xenc = F.one_hot(xs, num_classes=27).float()
+	logits = xenc @ W
+	counts = logits.exp() # equivalent N
+	probs = counts / counts.sum(1, keepdim=True)
+	loss = -probs[torch.arange(num), ys].log().mean()
+	# print(loss.item())
+
+	# Backward pass
+	W.grad = None #set the gradient to zero
+	loss.backward()
+
+	#update
+	W.data += -50 * W.grad
+
+
+
+# finally, sample from the neural net model
+g = torch.Generator().manual_seed(2147483647)
+
+for i in range(5):
+	out = []
+	ix = 0
+	while True:
+		xenc = F.one_hot(torch.tensor([ix]), num_classes=27).float()
+		logits = xenc @ W
+		counts = logits.exp() # equivalent N
+		p = counts / counts.sum(1, keepdim=True)
+		
+		ix = torch.multinomial(p, num_samples=1, replacement=True, generator=g).item()
+		out.append(itos[ix])
+
+		if ix == 0:
+			break
+	print(''.join(out))
