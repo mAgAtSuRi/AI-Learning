@@ -72,7 +72,7 @@ g = torch.Generator().manual_seed(2147483647)
 W = torch.randn((27, 27), generator=g, requires_grad=True)
 
 # gradient descent
-for k in range(200):
+for k in range(100):
 
 	# Forward pass
 	xenc = F.one_hot(xs, num_classes=27).float()
