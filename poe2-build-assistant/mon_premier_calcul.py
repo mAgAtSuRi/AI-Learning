@@ -1,6 +1,5 @@
 import sys
 import asyncio
-import json
 from test_avant_apres import decode_pob_code, read_stats
 from pob_mcp.bridge import BridgeError, BridgeManager
 from pob_mcp.locate import locate_luajit, locate_pob
@@ -15,6 +14,9 @@ async def analyse_build(bridge, source, nom_gem):
 	xml = source if source.lstrip().startswith(("<?xml", "<PathOfBuilding")) else decode_pob_code(source)
 	await bridge.call("load_build_xml", {"xml": xml, "name": "mon-build"})
 
+	await bridge.call("set_config", {"var": "conditionFullMana", "value": True})
+	await bridge.call("set_config", {"var": "multiplierNonInstantSpellCastRecently", "value": 3})
+
 	skills = await bridge.call("get_skills")
 
 	#1 Trouver le groupe principal
@@ -22,9 +24,9 @@ async def analyse_build(bridge, source, nom_gem):
 	for groupe in skills["socketGroups"]:
 		if groupe["index"] == skills["mainSocketGroup"]:
 			groupe_principal = groupe
-			if groupe_principal is None:
-				print(f"Groupe principal non trouvé")
-				return
+	if groupe_principal is None:
+		print(f"Groupe principal non trouvé")
+		return
 	
 	#2 Trouver la gem dans ce groupe
 	trouve = None
@@ -38,13 +40,21 @@ async def analyse_build(bridge, source, nom_gem):
 		print(f"Gem non trouvée: {nom_gem}")
 		return
 	print(f"Gem trouvée : {nom_gem} (index {trouve['index']}, niveau {trouve['level']})")
-	stats = await read_stats(bridge)
-	print(f"DPS actuel : {stats['CombinedDPS']}")
+	with_gem = await read_stats(bridge)
+	print("DPS actuel :", with_gem['CombinedDPS'])
 
-	# label = nom_gem.get("nameSpec") or nom_gem.get("gemId") or nom_gem.get("skillId") or "?"
-	# etat = "actif" if nom_gem["enabled"] else "désactivé"
-	# print(f"  {nom_gem['index']}. {label} (niveau {nom_gem.get('level')}, {etat})")
-
+	params = {"groupIndex": skills["mainSocketGroup"], "gemIndex": trouve["index"]}
+	await bridge.call("set_gem", {**params, "enabled": False})
+	without_gem = await read_stats(bridge)
+	await bridge.call("set_gem", {**params, "enabled": True})
+	diff_gem = (without_gem['CombinedDPS'] - with_gem['CombinedDPS']) * 100 / with_gem['CombinedDPS']
+	print(f"DPS sans {nom_gem} : {without_gem['CombinedDPS']} ({diff_gem:+.1f})%")
+	
+	check = await read_stats(bridge)
+	if abs(check["CombinedDPS"] - with_gem["CombinedDPS"]) < 1e-6 * max(1.0, abs(with_gem["CombinedDPS"])):
+		print("Build remis à son état de départ")
+	else:
+		print("Build pas réinitialisé")
 
 async def calcul_dps(file, gem):
 	pob = locate_pob()
