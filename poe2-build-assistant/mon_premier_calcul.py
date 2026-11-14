@@ -5,7 +5,16 @@ from pob_mcp.bridge import BridgeError, BridgeManager
 from pob_mcp.locate import locate_luajit, locate_pob
 from pathlib import Path
 
-async def analyse_build(bridge, source, nom_gem):
+async def measure_skill_dps(bridge, group_num, gem):
+	params = {"groupIndex": group_num, "gemIndex": gem["index"]}
+	await bridge.call("set_gem", {**params, "enabled": False})
+	without_gem = await read_stats(bridge)
+	await bridge.call("set_gem", {**params, "enabled": True})
+	dps_without_gem = without_gem['CombinedDPS']
+
+	return dps_without_gem
+
+async def analyse_build(bridge, source, gem_name):
 	path = Path(source)
 	if path.suffix.lower() == ".txt" and path.is_file():
 		source = path.read_text(encoding="utf-8").strip()
@@ -28,27 +37,33 @@ async def analyse_build(bridge, source, nom_gem):
 		print(f"Groupe principal non trouvé")
 		return
 	
-	#2 Trouver la gem dans ce groupe
-	trouve = None
-	for gem in groupe_principal["gems"]:
-		nom = gem.get("nameSpec") or ""
-		if nom.lower() == nom_gem.lower():
-			trouve = gem
-	
-	#3 Afficher le resultat
-	if trouve is None:
-		print(f"Gem non trouvée: {nom_gem}")
-		return
-	print(f"Gem trouvée : {nom_gem} (index {trouve['index']}, niveau {trouve['level']})")
 	with_gem = await read_stats(bridge)
 	print("DPS actuel :", with_gem['CombinedDPS'])
+	# 2 Trouver la gem dans ce groupe
+	gems = {}
+	for gem in groupe_principal["gems"]:
+		nom = gem.get("nameSpec") or ""
+		dps = await measure_skill_dps(bridge, groupe_principal["index"], gem)
+		gems[nom] = dps
+		diff_gem = (dps - with_gem['CombinedDPS']) * 100 / with_gem['CombinedDPS']
+		print(f"DPS sans {nom} : {dps} ({diff_gem:+.1f})%")
+	print(gems)
+	
+	#3 Afficher le resultat
+	# if trouve is None:
+	# 	print(f"Gem non trouvée: {gem_name}")
+	# 	return
+	# print(f"Gem trouvée : {gem_name} (index {trouve['index']}, niveau {trouve['level']})")
+	# with_gem = await read_stats(bridge)
+	# print("DPS actuel :", with_gem['CombinedDPS'])
 
-	params = {"groupIndex": skills["mainSocketGroup"], "gemIndex": trouve["index"]}
-	await bridge.call("set_gem", {**params, "enabled": False})
-	without_gem = await read_stats(bridge)
-	await bridge.call("set_gem", {**params, "enabled": True})
-	diff_gem = (without_gem['CombinedDPS'] - with_gem['CombinedDPS']) * 100 / with_gem['CombinedDPS']
-	print(f"DPS sans {nom_gem} : {without_gem['CombinedDPS']} ({diff_gem:+.1f})%")
+
+	# # params = {"groupIndex": skills["mainSocketGroup"], "gemIndex": trouve["index"]}
+	# # await bridge.call("set_gem", {**params, "enabled": False})
+	# # without_gem = await read_stats(bridge)
+	# # await bridge.call("set_gem", {**params, "enabled": True})
+	# diff_gem = (without_gem['CombinedDPS'] - with_gem['CombinedDPS']) * 100 / with_gem['CombinedDPS']
+	# print(f"DPS sans {gem_name} : {without_gem['CombinedDPS']} ({diff_gem:+.1f})%")
 	
 	check = await read_stats(bridge)
 	if abs(check["CombinedDPS"] - with_gem["CombinedDPS"]) < 1e-6 * max(1.0, abs(with_gem["CombinedDPS"])):
