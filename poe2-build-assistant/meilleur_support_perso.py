@@ -2,10 +2,17 @@ import sys
 import asyncio
 import time
 from itertools import combinations
+from unittest import result
 from test_avant_apres import decode_pob_code, read_stats
 from pob_mcp.bridge import BridgeError, BridgeManager
 from pob_mcp.locate import locate_luajit, locate_pob
 from pathlib import Path
+
+def find_gem(liste, champ, nom):
+	for dic in liste:
+		if dic.get(champ) == nom:
+			return dic
+	return None
 
 async def measure_skill_dps(bridge, group_num, gem_list):
 	"""measure dps of a gem list by deactivatinbg and reactivating the gem"""
@@ -143,6 +150,28 @@ async def analyse_build(bridge, source):
 	sorted_all_combinaison = sorted(all_combinaison, key=lambda gem: gem["DPS"], reverse=True)
 	for rang, ligne in enumerate(sorted_all_combinaison[:15], 1):
 		print(f"{rang:<5}{ligne['name']:<40}{ligne['DPS']:>12,.0f}{ligne['variation']:>+11.1f} %")
+
+	# Candidates as new gems
+	candidates_gems = ["Chaos Attunement", "Inexorable Critical I", "Extraction", "Poison II"]
+	candidates = []
+	for candidate in candidates_gems:
+		gem = find_gem(gem_available, "name", candidate)
+		if gem is None:
+			print(f'Candidate {candidate} not found')
+			continue
+		else:
+			candidates.append(gem)
+	print(len(candidates))
+
+	# Build a table for each candidate showing change of dps for gems already used
+	resultats = {}
+	for candidate in candidates:
+		resultats[candidate["name"]] = {}
+		for old_gem in gems:
+			new_dps = await change_gem(bridge, groupe_principal["index"], old_gem, candidate)
+			r = new_dps / dps_without_gem[old_gem["nameSpec"]]
+			resultats[candidate["name"]][old_gem["nameSpec"]] = r
+	print(f'résultats : {resultats}')
 
 	check = await read_stats(bridge)
 	if abs(check["CombinedDPS"] - with_gem["CombinedDPS"]) < 1e-6 * max(1.0, abs(with_gem["CombinedDPS"])):
