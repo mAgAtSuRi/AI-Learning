@@ -21,6 +21,51 @@ def find_groupe_principal(skills):
 	print('groupe not found')
 	return None
 
+def get_supports(groupe_principal):
+	gems = []
+	for gem in groupe_principal["gems"]:
+		gem_id = gem.get("skillId") or ""
+		if not gem_id.startswith("Support"):
+			continue
+		gems.append(gem)
+	return gems
+
+def family(name):
+	"""Return name of gem without the level"""
+	numbers = ["I", "II", "III", "IV", "V"]
+	split = name.split()
+	if split[-1] not in numbers:
+		return name
+	return " ".join(split[:-1])
+
+def best_set(sorted_list, excluded):
+	chosen = []
+	families_used = set()
+	for gem in sorted_list:
+		if gem["m"] <= 1 or gem["name"] in excluded or family(gem["name"]) in families_used:
+			continue
+		chosen.append(gem)
+		families_used.add(family(gem["name"]))
+		if len(chosen) >= 5:
+			break
+	return chosen
+
+def print_tableau(sorted_all_combinaison, n):
+	for rang, ligne in enumerate(sorted_all_combinaison[:n], 1):
+		print(f"{rang:<5}{ligne['name']:<40}{ligne['m']:>12,.3f}")
+
+async def load_build(bridge, source):
+	"""load current pob build"""
+	path = Path(source)
+	if path.suffix.lower() == ".txt" and path.is_file():
+		source = path.read_text(encoding="utf-8").strip()
+
+	print("Chargement du build...")
+	xml = source if source.lstrip().startswith(("<?xml", "<PathOfBuilding")) else decode_pob_code(source)
+	await bridge.call("load_build_xml", {"xml": xml, "name": "mon-build"})
+
+	await bridge.call("set_config", {"var": "conditionFullMana", "value": True})
+	await bridge.call("set_config", {"var": "multiplierNonInstantSpellCastRecently", "value": 3})
 
 async def measure_skill_dps(bridge, group_num, gem_list):
 	"""measure dps of a gem list by deactivatinbg and reactivating the gem"""
@@ -36,6 +81,26 @@ async def measure_skill_dps(bridge, group_num, gem_list):
 	dps_without_gem = without_gem['CombinedDPS']
 	return dps_without_gem
 
+async def list_candidates(bridge, groupe_principal):
+	"""Return all gems available"""
+	gem_id_used = set()
+	for gem in groupe_principal["gems"]:
+		gem_id_used.add(gem["gemId"])
+	all_valid_gems = await bridge.call("list_valid_supports", {"groupIndex": groupe_principal["index"]})
+	gem_available = []
+	for gem in all_valid_gems["supports"]:
+		if gem["gemId"] not in gem_id_used:
+			gem_available.append(gem)
+	return gem_available
+
+async def measure_present(bridge, group_num, gems):
+	"""Return dic storing value of dps without the corresponding gem"""
+	dps_without_gem = {}
+	for gem in gems:
+		dps = await measure_skill_dps(bridge, group_num, [gem])
+		dps_without_gem[gem["nameSpec"]] = dps
+	return dps_without_gem
+	
 async def change_gem(bridge, group_num, old_gem, new_gem):
 	"""Change a gem by another one and return the new dps"""
 	params = {"groupIndex": group_num, "gemIndex": old_gem["index"]}
@@ -47,6 +112,7 @@ async def change_gem(bridge, group_num, old_gem, new_gem):
 	await bridge.call("remove_gem", {"groupIndex": group_num, "gemIndex": ajout["gemIndex"]})
 	await bridge.call("set_gem", {**params, "enabled": True})
 	return new_dps["CombinedDPS"]
+
 
 async def test_independance(bridge, groupe_principal, gems, candidates, dps_without_gem, with_gem):
 	"""Build a table for each candidate showing change of dps for gems already used"""
@@ -65,18 +131,37 @@ async def test_independance(bridge, groupe_principal, gems, candidates, dps_with
 	else:
 		print("Build pas réinitialisé")
 
+async def compute_multipliers(bridge, groupe_num, candidates, gems, dps_without_gem, start_dps):
+	"""return all combinaison"""
+	# List of all dps change for available gems instead of chaos
+	all_combinaison = []
+	old_gem = find_gem(gems, "nameSpec", "Chaos Mastery")
+	if old_gem is None:
+		print("Chaos Mastery not found")
+		return []
+
+	# All candidates
+	for gem in candidates:
+		new_dps = await change_gem(bridge, groupe_num, old_gem, gem)	
+		m = new_dps / dps_without_gem[old_gem["nameSpec"]]
+		dic = {"name": gem["name"], "m": m, "gemId": gem["gemId"], "present": False}
+		all_combinaison.append(dic)
+
+	# Add the m for the 5 gems already used
+	for gem in gems:
+		m = start_dps / dps_without_gem[gem["nameSpec"]]
+		all_combinaison.append(({"name": gem["nameSpec"], "m": m, "gemId": gem["gemId"], "present": True}))
+	
+	return all_combinaison
+
+def predict_dps(k, mult_list):
+	total_dps = k
+	for mult in mult_list:
+		total_dps *= mult
+	return total_dps
 
 async def analyse_build(bridge, source):
-	path = Path(source)
-	if path.suffix.lower() == ".txt" and path.is_file():
-		source = path.read_text(encoding="utf-8").strip()
-
-	print("Chargement du build...")
-	xml = source if source.lstrip().startswith(("<?xml", "<PathOfBuilding")) else decode_pob_code(source)
-	await bridge.call("load_build_xml", {"xml": xml, "name": "mon-build"})
-
-	await bridge.call("set_config", {"var": "conditionFullMana", "value": True})
-	await bridge.call("set_config", {"var": "multiplierNonInstantSpellCastRecently", "value": 3})
+	await load_build(bridge, source)
 
 	skills = await bridge.call("get_skills")
 
@@ -85,75 +170,25 @@ async def analyse_build(bridge, source):
 	with_gem = await read_stats(bridge)
 	print("DPS actuel :", with_gem['CombinedDPS'])
 
-	gem_id_used = set()
-	for gem in groupe_principal["gems"]:
-		gem_id_used.add(gem["gemId"])
-
-	all_valid_gems = await bridge.call("list_valid_supports", {"groupIndex": groupe_principal["index"]})
-	gem_available = []
-	for gem in all_valid_gems["supports"]:
-		if gem["gemId"] not in gem_id_used:
-			gem_available.append(gem)	
-
-
-	# Store all gems used
-	gems = []
-	for gem in groupe_principal["gems"]:
-		gem_id = gem.get("skillId") or ""
-		if not gem_id.startswith("Support"):
-			continue
-		gems.append(gem)
 	
-	# Dic storing value of dps without the corresponding gem
-	dps_without_gem = {}
-	for gem in gems:
-		dps = await measure_skill_dps(bridge, groupe_principal["index"], [gem])
-		dps_without_gem[gem["nameSpec"]] = dps
+	gems_available = await list_candidates(bridge, groupe_principal)
 
+	gems = get_supports(groupe_principal)
+	dps_without_gem = await measure_present(bridge, groupe_principal["index"], gems)
+	all_combinaison = await compute_multipliers(bridge, groupe_principal["index"], gems_available, gems, dps_without_gem, with_gem["CombinedDPS"])
 
-	# List of all dps change for available gems instead of chaos
-	all_combinaison = []
-	old_gem = None
-	old_time = time.time()
-
-	for gem in groupe_principal["gems"]:
-		if gem["nameSpec"] == "Chaos Mastery":
-			old_gem = gem
-	if old_gem is None:
-		print("old or new gem is none")
-		return
-
-	# All candidates
-	for gem in gem_available:
-		new_dps = await change_gem(bridge, groupe_principal["index"], old_gem, gem)	
-		# diff_gem_dps = (new_dps - with_gem['CombinedDPS']) * 100 / with_gem['CombinedDPS']
-		m = new_dps / dps_without_gem[old_gem["nameSpec"]]
-		dic = {"name": gem["name"], "m": m, "gemId": gem["gemId"], "present": False}
-		all_combinaison.append(dic)
-
-	# Add the m for the 5 gems already used
-	for gem in gems:
-		m = with_gem['CombinedDPS'] / dps_without_gem[gem["nameSpec"]]
-		all_combinaison.append(({"name": gem["nameSpec"], "m": m, "gemId": gem["gemId"], "present": True}))
-	
 	m_list = []
 	for dic in all_combinaison:
 		if dic["present"]:
 			m_list.append(dic["m"])
 	k = await measure_skill_dps(bridge, groupe_principal["index"], gems)
-
-	total_dps = k
-	for mult in m_list:
-		total_dps *= mult
+	total_dps = predict_dps(k, m_list)
+	
 	print(f'Base dps K: {k}')
 	print(f'total dps: {total_dps}')
 
-	new_time = time.time()
-	print(f"Durée: {new_time - old_time}")
-
 	sorted_all_combinaison = sorted(all_combinaison, key=lambda gem: gem["m"], reverse=True)
-	for rang, ligne in enumerate(sorted_all_combinaison[:15], 1):
-		print(f"{rang:<5}{ligne['name']:<40}{ligne['m']:>12,.3f}")
+	print_tableau(sorted_all_combinaison, 15)
 
 
 async def calcul_dps(file):
