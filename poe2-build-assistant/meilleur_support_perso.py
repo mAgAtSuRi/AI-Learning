@@ -54,6 +54,12 @@ def print_tableau(sorted_all_combinaison, n):
 	for rang, ligne in enumerate(sorted_all_combinaison[:n], 1):
 		print(f"{rang:<5}{ligne['name']:<40}{ligne['m']:>12,.3f}")
 
+def predict_dps(k, mult_list):
+	total_dps = k
+	for mult in mult_list:
+		total_dps *= mult
+	return total_dps
+
 async def load_build(bridge, source):
 	"""load current pob build"""
 	path = Path(source)
@@ -68,7 +74,7 @@ async def load_build(bridge, source):
 	await bridge.call("set_config", {"var": "multiplierNonInstantSpellCastRecently", "value": 3})
 
 async def measure_skill_dps(bridge, group_num, gem_list):
-	"""measure dps of a gem list by deactivatinbg and reactivating the gem"""
+	"""measure dps of a skill by deactivatinbg and reactivating the gem"""
 	for gem in gem_list:
 		params = {"groupIndex": group_num, "gemIndex": gem["index"]}
 		await bridge.call("set_gem", {**params, "enabled": False})
@@ -154,11 +160,42 @@ async def compute_multipliers(bridge, groupe_num, candidates, gems, dps_without_
 	
 	return all_combinaison
 
-def predict_dps(k, mult_list):
-	total_dps = k
-	for mult in mult_list:
-		total_dps *= mult
-	return total_dps
+async def measure_set(bridge, groupe_num, current_gems, new_gems):
+	"""Return dps of skill with new gems"""
+	for gem in current_gems:
+		params = {"groupIndex": groupe_num, "gemIndex": gem["index"]}
+		await bridge.call("set_gem", {**params, "enabled": False})
+	
+	gems_index = []
+
+	for gem in new_gems:
+		ajout = await bridge.call("add_gem", {"groupIndex": groupe_num, "gemId": gem["gemId"]})
+		gems_index.append(ajout["gemIndex"])
+
+	dps_new_gems = await read_stats(bridge)
+	for index in reversed(gems_index):
+		await bridge.call("remove_gem", {"groupIndex": groupe_num, "gemIndex": index})
+
+	for gem in current_gems:
+		params = {"groupIndex": groupe_num, "gemIndex": gem["index"]}
+		await bridge.call("set_gem", {**params, "enabled": True})
+	return dps_new_gems["CombinedDPS"]
+
+async def test_interaction(bridge, groupe_num, gems, all_combinaison, k):
+	"""Compare prédit et réel pour 3 ensembles : base + Extraction, base + Chaos Attunement, base + les deux"""
+	base = [find_gem(all_combinaison, "name", nom) for nom in ["Zenith II", "Rapid Casting III", "Deliberation"]]
+	extraction = find_gem(all_combinaison, "name", "Extraction")
+	attunement = find_gem(all_combinaison, "name", "Chaos Attunement")
+	tests = {
+		"Extraction": base + [extraction],
+		"Chaos Attunement": base + [attunement],
+		"les deux": base + [extraction, attunement],
+	}
+	for label, gem_set in tests.items():
+		real = await measure_set(bridge, groupe_num, gems, gem_set)
+		predicted = predict_dps(k, [g["m"] for g in gem_set])
+		ecart = (real - predicted) / predicted * 100
+		print(f"{label:<20} prédit {predicted:>10,.0f}  réel {real:>10,.0f}  écart {ecart:+.2f}%")
 
 async def analyse_build(bridge, source):
 	await load_build(bridge, source)
@@ -169,7 +206,6 @@ async def analyse_build(bridge, source):
 	
 	with_gem = await read_stats(bridge)
 	print("DPS actuel :", with_gem['CombinedDPS'])
-
 	
 	gems_available = await list_candidates(bridge, groupe_principal)
 
@@ -188,9 +224,29 @@ async def analyse_build(bridge, source):
 	print(f'total dps: {total_dps}')
 
 	sorted_all_combinaison = sorted(all_combinaison, key=lambda gem: gem["m"], reverse=True)
-	print_tableau(sorted_all_combinaison, 15)
+	best_gems_A = best_set(sorted_all_combinaison, [])
+	best_gems_B = best_set(sorted_all_combinaison, ["Extraction", "Unleash"])
+	dps_A_real = await measure_set(bridge, groupe_principal["index"], gems, best_gems_A)
+	dps_B_real = await measure_set(bridge, groupe_principal["index"], gems, best_gems_B)
 
+	m_A = [g["m"] for g in best_gems_A]
+	dps_A_predicted = predict_dps(k, m_A)
 
+	m_B = [g["m"] for g in best_gems_B]
+	dps_B_predicted = predict_dps(k, m_B)
+
+	check = await read_stats(bridge)
+	if abs(check["CombinedDPS"] - with_gem["CombinedDPS"]) < 1e-6 * max(1.0, abs(with_gem["CombinedDPS"])):
+		print("Build remis à son état de départ")
+	else:
+		print("Build pas réinitialisé")
+
+	ecart_A = (dps_A_real - dps_A_predicted) / dps_A_predicted * 100
+	ecart_B = (dps_B_real - dps_B_predicted) / dps_B_predicted * 100
+	print(f'DPS prédit pour A : {dps_A_predicted:,.0f}, DPS réel: {dps_A_real:,.0f}\n Ecart: {ecart_A:+.2f}%')
+	print(f'DPS prédit pour B : {dps_B_predicted:,.0f}, DPS réel: {dps_B_real:,.0f}\n Ecart: {ecart_B:+.2f}%')
+
+	await test_interaction(bridge, groupe_principal["index"], gems, all_combinaison, k)
 async def calcul_dps(file):
 	pob = locate_pob()
 	luajit = locate_luajit()
